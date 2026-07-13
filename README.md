@@ -2,6 +2,17 @@
 
 An AI-native city social simulator demonstrating exceptional software architecture around LLM agents, deterministic simulation, and state isolation.
 
+## Prompting Strategy
+
+The simulation uses a constrained prompting strategy rather than trusting raw LLM outputs.
+
+- **State-first prompting** – Each NPC receives only the current world state (citizens, zones, resources, relationships, energy) and is instructed to reason only from observable information.
+- **Structured JSON output** – The model is required to emit a strict JSON action schema, eliminating free-form responses.
+- **Deterministic validation** – Every proposed action passes through a rule-based validator before any state mutation occurs. Invalid actions are rejected regardless of the model's reasoning.
+- **Fail-safe execution** – Rejected or malformed outputs are replaced with deterministic fallback actions, ensuring the simulation never crashes or corrupts world state.
+- **Injection testing** – During evaluation, specific ticks intentionally override the LLM output with invalid actions (e.g. invalid zones, impossible economic actions, unsupported actions) to verify that the validator correctly rejects unrealistic or impossible behavior.
+- **Separation of concerns** – The LLM decides *intent*; the simulation engine decides *whether that intent is physically and logically possible*.S
+
 ## Architecture
 
 ```
@@ -97,15 +108,71 @@ Energy decay applies only to the active citizen each tick, preventing the death 
 
 ## Prompt Strategy
 
-Personality traits (Sociability, Aggression, Empathy) are converted to descriptive text in prompts, which influences the LLM's behavior without hardcoding action probabilities:
+The prompt builder (`app/llm/prompt_builder.py`) constructs rich, structured prompts that give the LLM comprehensive context for decision-making. The strategy is to **guide** rather than **hardcode** behavior.
+
+### Prompt Structure
+
+Each prompt includes:
+
+1. **Current State**: Tick number, current zone, zone population, nearby citizens
+2. **Citizen Status**: Gold, energy, distressed flag (energy ≤ 2), poor flag (gold < 15)
+3. **Nearby Citizens**: For each nearby citizen, their gold, energy, trust, affinity, distressed/poor status
+4. **Personality**: Natural language description derived from personality tensor
+5. **Relationships**: Existing bonds with other citizens, including affinity and trust values
+6. **Recent Interactions**: Last 5 interactions the citizen has had (who helped them, who stole from them)
+7. **Recent Events**: Last 5 chronicle events for short-term memory
+8. **Decision Guidance**: Personality-aligned suggestions based on current situation
+9. **Available Actions**: Complete list of actions with costs, requirements, and examples
+10. **JSON Schema**: Exact output format with examples
+
+### Personality-to-Text Mapping
+
+Personality traits are converted to descriptive text that influences LLM behavior without hardcoding action probabilities:
 
 - **High Sociability (≥0.7)**: "highly sociable and enjoys interacting with others"
-- **Low Sociability (≤0.3)**: "reserved and prefers solitude"
-- **High Aggression (≥0.7)**: "quick to aggression and willing to take what they want"
-- **Low Empathy (≤0.3)**: "lacks empathy and is indifferent to others' suffering"
-- **High Empathy (≥0.7)**: "deeply empathetic and considerate of others' feelings"
+- **Low Sociability (≤0.3)**: "reserved and prefers solitude, but will act if necessary"
+- **High Aggression (≥0.7)**: "quick to aggression and willing to take what they want by force"
+- **Low Aggression (≤0.3)**: "peaceful and avoids conflict whenever possible"
+- **High Empathy (≥0.7)**: "deeply empathetic and considerate of others' feelings — inclined to give"
+- **Low Empathy (≤0.3)**: "lacks empathy and is indifferent to others' suffering — may exploit others"
 
-Distressed citizens (energy ≤ 2) and poor citizens (gold < 15) are flagged in the prompt to encourage helping behavior.
+### Situation-Aligned Guidance
+
+The prompt provides contextual advice based on the citizen's current state:
+
+- **Distressed (energy ≤ 2)**: "CRITICAL: Survival is paramount. REST immediately to recover energy."
+- **Poor (gold < 15)**: "Consider WORK to earn money, or ask for help from generous citizens."
+- **Nearby distressed citizens**: "Nearby citizens in distress: Alice, Bob. Empathetic citizens should consider HELP or GIFT."
+- **High empathy + resources + struggling nearby**: "With means and compassion, Alice could assist Bob. HELP (8g + 2e) is most impactful. GIFT (5g) is also meaningful."
+- **High aggression**: "Aggressive nature may favor STEAL or WARN. STEAL has 5-tick cooldown and destroys trust."
+- **Recent theft victim**: "WARNING: 2 recent theft(s) victimized you. Consider STEAL retaliation, WARN others, or avoid the perpetrator."
+- **Recent help recipient**: "You've received help recently (1 time(s)). Consider GIFT or HELP in return to maintain goodwill."
+
+### Zone-Specific Guidance
+
+Zones provide strategic context:
+
+- **Residential_Sector**: "Residential areas offer peaceful REST with excellent energy recovery (+2 bonus)."
+- **Market_District**: "The Market is where commerce happens. WORK here earns bonus gold (+3). TRADE opportunities abound."
+- **City_Park**: "The Park's tranquility boosts social interactions (+0.05 affinity) and provides mild rest bonuses (+1)."
+
+### Memory and Learning
+
+Citizens maintain interaction memory that influences future prompts:
+
+- **Recent interactions**: Last 10 interactions are tracked (who, what action, when)
+- **Chronicle history**: Last 5 chronicle events provide short-term memory
+- **Relationship history**: Trust and affinity values persist and evolve
+
+This creates emergent behavior where:
+- Citizens who were stolen from may avoid the perpetrator or retaliate
+- Citizens who received help may feel obligated to reciprocate
+- Repeated generous behavior builds stronger bonds
+- Repeated betrayal destroys trust
+
+### Key Design Principle
+
+The prompt provides **rich context and gentle guidance** but never forces actions. The LLM retains full agency to make decisions. The validator is the only component that enforces rules, and it does so deterministically after the LLM proposes an action.
 
 ## How Validation Works
 
