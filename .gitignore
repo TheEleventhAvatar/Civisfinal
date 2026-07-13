@@ -1,0 +1,11 @@
+/.env
+/.pytest_cache
+/.venv
+/.venv-1
+/README.md
+/app
+/logs
+/requirements.txt
+/scripts
+/tests
+/venv
